@@ -1163,6 +1163,24 @@ main(int ac, char **av)
 		free(cp);
 	}
 
+	if (options.remote_command != NULL) {
+		debug3("expanding RemoteCommand: %s", options.remote_command);
+		cp = options.remote_command;
+		options.remote_command = percent_expand(cp,
+		    "C", conn_hash_hex,
+		    "L", shorthost,
+		    "d", pw->pw_dir,
+		    "h", host,
+		    "l", thishost,
+		    "n", host_arg,
+		    "p", portstr,
+		    "r", options.user,
+		    "u", pw->pw_name,
+		    (char *)NULL);
+		debug3("expanded RemoteCommand: %s", options.remote_command);
+		free(cp);
+	}
+
 	if (options.control_path != NULL) {
 		cp = tilde_expand_filename(options.control_path,
 		    original_real_uid);
