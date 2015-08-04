@@ -942,12 +942,6 @@ main(int ac, char **av)
 		}
 	}
 
-	/* Cannot fork to background if no command. */
-	if (fork_after_authentication_flag && buffer_len(&command) == 0 &&
-	    !no_shell_flag)
-		fatal("Cannot fork into background without a command "
-		    "to execute.");
-
 	/*
 	 * Initialize "log" output.  Since we are the client all output
 	 * goes to stderr unless otherwise specified by -y or -E.
@@ -1101,6 +1095,15 @@ main(int ac, char **av)
 	if (original_effective_uid != 0)
 		options.use_privileged_port = 0;
 
+	if (buffer_len(&command) != 0 && options.remote_command != NULL)
+		fatal("Cannot execute command-line and remote command.");
+
+	/* Cannot fork to background if no command. */
+	if (fork_after_authentication_flag && buffer_len(&command) == 0 &&
+	    options.remote_command == NULL && !no_shell_flag)
+		fatal("Cannot fork into background without a command "
+		    "to execute.");
+
 	/* reinit */
 	log_init(argv0, options.log_level, options.log_facility, !use_syslog);
 
@@ -1109,7 +1112,7 @@ main(int ac, char **av)
 		tty_flag = 1;
 
 	/* Allocate a tty by default if no command specified. */
-	if (buffer_len(&command) == 0)
+	if (buffer_len(&command) == 0 && options.remote_command == NULL)
 		tty_flag = options.request_tty != REQUEST_TTY_NO;
 
 	/* Force no tty */
