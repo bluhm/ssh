@@ -134,6 +134,7 @@ typedef struct {
 
 	char	*local_command;
 	int	permit_local_command;
+	char	*remote_command;
 	int	visual_host_key;
 
 	int	request_tty;
