@@ -1182,6 +1182,9 @@ main(int ac, char **av)
 		    (char *)NULL);
 		debug3("expanded RemoteCommand: %s", options.remote_command);
 		free(cp);
+		buffer_append(&command, options.remote_command,
+		    strlen(options.remote_command));
+
 	}
 
 	if (options.control_path != NULL) {
