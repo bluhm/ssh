@@ -288,7 +288,6 @@ static struct {
 	{ "updatehostkeys", oUpdateHostkeys },
 	{ "hostbasedkeytypes", oHostbasedKeyTypes },
 	{ "pubkeyacceptedkeytypes", oPubkeyAcceptedKeyTypes },
-	{ "remotecommand", oRemoteCommand },
 	{ "ignoreunknown", oIgnoreUnknown },
 	{ "proxyjump", oProxyJump },
 
