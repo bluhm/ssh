@@ -1,4 +1,4 @@
-/* $OpenBSD: ssh.c,v 1.422 2015/09/04 08:21:47 dtucker Exp $ */
+/* $OpenBSD: ssh.c,v 1.425 2015/09/11 06:55:46 jmc Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -188,11 +188,9 @@ usage(void)
 	fprintf(stderr,
 "usage: ssh [-1246AaCfGgKkMNnqsTtVvXxYy] [-b bind_address] [-c cipher_spec]\n"
 "           [-D [bind_address:]port] [-E log_file] [-e escape_char]\n"
-"           [-F configfile] [-I pkcs11] [-i identity_file]\n"
-"           [-L address] [-l login_name] [-m mac_spec]\n"
-"           [-O ctl_cmd] [-o option] [-p port]\n"
-"           [-Q cipher | cipher-auth | mac | kex | key]\n"
-"           [-R address] [-S ctl_path] [-W host:port]\n"
+"           [-F configfile] [-I pkcs11] [-i identity_file] [-L address]\n"
+"           [-l login_name] [-m mac_spec] [-O ctl_cmd] [-o option] [-p port]\n"
+"           [-Q query_option] [-R address] [-S ctl_path] [-W host:port]\n"
 "           [-w local_tun[:remote_tun]] [user@]hostname [command]\n"
 	);
 	exit(255);
@@ -491,7 +489,7 @@ main(int ac, char **av)
 	int i, r, opt, exit_status, use_syslog, config_test = 0;
 	char *p, *cp, *line, *argv0, buf[PATH_MAX], *host_arg, *logfile;
 	char thishost[NI_MAXHOST], shorthost[NI_MAXHOST], portstr[NI_MAXSERV];
-	char cname[NI_MAXHOST];
+	char cname[NI_MAXHOST], uidstr[32], *conn_hash_hex;
 	struct stat st;
 	struct passwd *pw;
 	int timeout_ms;
@@ -501,7 +499,6 @@ main(int ac, char **av)
 	struct addrinfo *addrs = NULL;
 	struct ssh_digest_ctx *md;
 	u_char conn_hash[SSH_DIGEST_MAX_LENGTH];
-	char *conn_hash_hex;
 
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
 	sanitise_stdfd();
@@ -1089,6 +1086,7 @@ main(int ac, char **av)
 	strlcpy(shorthost, thishost, sizeof(shorthost));
 	shorthost[strcspn(thishost, ".")] = '\0';
 	snprintf(portstr, sizeof(portstr), "%d", options.port);
+	snprintf(uidstr, sizeof(uidstr), "%d", pw->pw_uid);
 
 	if ((md = ssh_digest_start(SSH_DIGEST_SHA1)) == NULL ||
 	    ssh_digest_update(md, thishost, strlen(thishost)) < 0 ||
@@ -1131,6 +1129,7 @@ main(int ac, char **av)
 		    "p", portstr,
 		    "r", options.user,
 		    "u", pw->pw_name,
+		    "i", uidstr,
 		    (char *)NULL);
 		free(cp);
 	}
