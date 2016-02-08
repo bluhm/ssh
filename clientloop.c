@@ -321,22 +321,6 @@ client_x11_get_proto(const char *display, const char *xauth_path,
 	}
 
 	if (xauth_path != NULL) {
-		/*
-		 * Handle FamilyLocal case where $DISPLAY does
-		 * not match an authorization entry.  For this we
-		 * just try "xauth list unix:displaynum.screennum".
-		 * XXX: "localhost" match to determine FamilyLocal
-		 *      is not perfect.
-		 */
-		if (strncmp(display, "localhost:", 10) == 0) {
-			if ((r = snprintf(xdisplay, sizeof(xdisplay), "unix:%s",
-			    display + 10)) < 0 ||
-			    (size_t)r >= sizeof(xdisplay)) {
-				error("%s: display name too long", __func__);
-				return -1;
-			}
-			display = xdisplay;
-		}
 		if (trusted == 0) {
 			/*
 			 * Generate an untrusted X11 auth cookie.
