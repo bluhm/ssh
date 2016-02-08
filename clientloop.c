@@ -297,7 +297,7 @@ int
 client_x11_get_proto(const char *display, const char *xauth_path,
     u_int trusted, u_int timeout, char **_proto, char **_data)
 {
-	char cmd[1024], line[512], xdisplay[512];
+	char cmd[1024], line[512];
 	char xauthfile[PATH_MAX], xauthdir[PATH_MAX];
 	static char proto[512], data[512];
 	FILE *f;
