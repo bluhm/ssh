@@ -1,4 +1,4 @@
-/* $OpenBSD: ssh-add.c,v 1.125 2015/09/13 14:39:16 tim Exp $ */
+/* $OpenBSD: ssh-add.c,v 1.127 2015/12/11 02:31:47 mmcc Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -142,10 +142,8 @@ delete_file(int agent_fd, const char *filename, int key_only)
 		    certpath, ssh_err(r));
 
  out:
-	if (cert != NULL)
-		sshkey_free(cert);
-	if (public != NULL)
-		sshkey_free(public);
+	sshkey_free(cert);
+	sshkey_free(public);
 	free(certpath);
 	free(comment);
 
@@ -376,7 +374,7 @@ list_identities(int agent_fd, int do_fp)
 			if (do_fp) {
 				fp = sshkey_fingerprint(idlist->keys[i],
 				    fingerprint_hash, SSH_FP_DEFAULT);
-				printf("%d %s %s (%s)\n",
+				printf("%u %s %s (%s)\n",
 				    sshkey_size(idlist->keys[i]),
 				    fp == NULL ? "(null)" : fp,
 				    idlist->comments[i],

@@ -1,4 +1,4 @@
-/* $OpenBSD: serverloop.c,v 1.178 2015/02/20 22:17:21 djm Exp $ */
+/* $OpenBSD: serverloop.c,v 1.181 2016/01/14 16:17:40 markus Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -74,7 +74,6 @@
 #include "dispatch.h"
 #include "auth-options.h"
 #include "serverloop.h"
-#include "roaming.h"
 #include "ssherr.h"
 
 extern ServerOptions options;
@@ -383,11 +382,8 @@ process_input(fd_set *readset)
 
 	/* Read and buffer any input data from the client. */
 	if (FD_ISSET(connection_in, readset)) {
-		int cont = 0;
-		len = roaming_read(connection_in, buf, sizeof(buf), &cont);
+		len = read(connection_in, buf, sizeof(buf));
 		if (len == 0) {
-			if (cont)
-				return;
 			verbose("Connection closed by %.100s",
 			    get_remote_ipaddr());
 			connection_closed = 1;
@@ -1164,7 +1160,7 @@ server_input_hostkeys_prove(struct sshbuf **respp)
 		    ssh->kex->session_id, ssh->kex->session_id_len)) != 0 ||
 		    (r = sshkey_puts(key, sigbuf)) != 0 ||
 		    (r = ssh->kex->sign(key_prv, key_pub, &sig, &slen,
-		    sshbuf_ptr(sigbuf), sshbuf_len(sigbuf), 0)) != 0 ||
+		    sshbuf_ptr(sigbuf), sshbuf_len(sigbuf), NULL, 0)) != 0 ||
 		    (r = sshbuf_put_string(resp, sig, slen)) != 0) {
 			error("%s: couldn't prepare signature: %s",
 			    __func__, ssh_err(r));
@@ -1225,7 +1221,8 @@ server_input_global_request(int type, u_int32_t seq, void *ctxt)
 		free(fwd.listen_host);
 		if ((resp = sshbuf_new()) == NULL)
 			fatal("%s: sshbuf_new", __func__);
-		if ((r = sshbuf_put_u32(resp, allocated_listen_port)) != 0)
+		if (allocated_listen_port != 0 &&
+		    (r = sshbuf_put_u32(resp, allocated_listen_port)) != 0)
 			fatal("%s: sshbuf_put_u32: %s", __func__, ssh_err(r));
 	} else if (strcmp(rtype, "cancel-tcpip-forward") == 0) {
 		struct Forward fwd;

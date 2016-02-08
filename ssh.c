@@ -1,4 +1,4 @@
-/* $OpenBSD: ssh.c,v 1.426 2015/09/24 06:15:11 djm Exp $ */
+/* $OpenBSD: ssh.c,v 1.435 2016/01/14 16:17:40 markus Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -95,7 +95,6 @@
 #include "match.h"
 #include "msg.h"
 #include "uidswap.h"
-#include "roaming.h"
 #include "version.h"
 #include "ssherr.h"
 #include "myproposal.h"
@@ -235,7 +234,7 @@ resolve_host(const char *name, int port, int logerr, char *cname, size_t clen)
 	if (port <= 0)
 		port = default_ssh_port();
 
-	snprintf(strport, sizeof strport, "%u", port);
+	snprintf(strport, sizeof strport, "%d", port);
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = options.address_family == -1 ?
 	    AF_UNSPEC : options.address_family;
@@ -389,6 +388,17 @@ resolve_canonicalize(char **hostp, int port)
 		return addrs;
 	}
 
+	/* If domain name is anchored, then resolve it now */
+	if ((*hostp)[strlen(*hostp) - 1] == '.') {
+		debug3("%s: name is fully qualified", __func__);
+		fullhost = xstrdup(*hostp);
+		if ((addrs = resolve_host(fullhost, port, 0,
+		    newname, sizeof(newname))) != NULL)
+			goto found;
+		free(fullhost);
+		goto notfound;
+	}
+
 	/* Don't apply canonicalization to sufficiently-qualified hostnames */
 	ndots = 0;
 	for (cp = *hostp; *cp != '\0'; cp++) {
@@ -412,6 +422,7 @@ resolve_canonicalize(char **hostp, int port)
 			free(fullhost);
 			continue;
 		}
+ found:
 		/* Remove trailing '.' */
 		fullhost[strlen(fullhost) - 1] = '\0';
 		/* Follow CNAME if requested */
@@ -423,6 +434,7 @@ resolve_canonicalize(char **hostp, int port)
 		*hostp = fullhost;
 		return addrs;
 	}
+ notfound:
 	if (!options.canonicalize_fallback_local)
 		fatal("%s: Could not resolve host \"%s\"", __progname, *hostp);
 	debug2("%s: host %s not found in any suffix", __func__, *hostp);
@@ -671,13 +683,14 @@ main(int ac, char **av)
 			options.gss_deleg_creds = 1;
 			break;
 		case 'i':
-			if (stat(optarg, &st) < 0) {
+			p = tilde_expand_filename(optarg, original_real_uid);
+			if (stat(p, &st) < 0)
 				fprintf(stderr, "Warning: Identity file %s "
-				    "not accessible: %s.\n", optarg,
+				    "not accessible: %s.\n", p,
 				    strerror(errno));
-				break;
-			}
-			add_identity_file(&options, NULL, optarg, 1);
+			else
+				add_identity_file(&options, NULL, p, 1);
+			free(p);
 			break;
 		case 'I':
 #ifdef ENABLE_PKCS11
@@ -867,8 +880,7 @@ main(int ac, char **av)
 			subsystem_flag = 1;
 			break;
 		case 'S':
-			if (options.control_path != NULL)
-				free(options.control_path);
+			free(options.control_path);
 			options.control_path = xstrdup(optarg);
 			break;
 		case 'b':
@@ -1052,6 +1064,9 @@ main(int ac, char **av)
 		    "disabling");
 		options.update_hostkeys = 0;
 	}
+	if (options.connection_attempts <= 0)
+		fatal("Invalid number of ConnectionAttempts");
+
 	if (original_effective_uid != 0)
 		options.use_privileged_port = 0;
 
@@ -1192,8 +1207,10 @@ main(int ac, char **av)
 		    sizeof(Key));
 
 		PRIV_START;
+#if WITH_SSH1
 		sensitive_data.keys[0] = key_load_private_type(KEY_RSA1,
 		    _PATH_HOST_KEY_FILE, "", NULL, NULL);
+#endif
 		sensitive_data.keys[1] = key_load_private_cert(KEY_ECDSA,
 		    _PATH_HOST_ECDSA_KEY_FILE, "", NULL);
 		sensitive_data.keys[2] = key_load_private_cert(KEY_ED25519,
@@ -1559,6 +1576,7 @@ ssh_session(void)
 	struct winsize ws;
 	char *cp;
 	const char *display;
+	char *proto = NULL, *data = NULL;
 
 	/* Enable compression if requested. */
 	if (options.compression) {
@@ -1629,13 +1647,9 @@ ssh_session(void)
 	display = getenv("DISPLAY");
 	if (display == NULL && options.forward_x11)
 		debug("X11 forwarding requested but DISPLAY not set");
-	if (options.forward_x11 && display != NULL) {
-		char *proto, *data;
-		/* Get reasonable local authentication information. */
-		client_x11_get_proto(display, options.xauth_location,
-		    options.forward_x11_trusted,
-		    options.forward_x11_timeout,
-		    &proto, &data);
+	if (options.forward_x11 && client_x11_get_proto(display,
+	    options.xauth_location, options.forward_x11_trusted,
+	    options.forward_x11_timeout, &proto, &data) == 0) {
 		/* Request forwarding with authentication spoofing. */
 		debug("Requesting X11 forwarding with authentication "
 		    "spoofing.");
@@ -1725,6 +1739,7 @@ ssh_session2_setup(int id, int success, void *arg)
 	extern char **environ;
 	const char *display;
 	int interactive = tty_flag;
+	char *proto = NULL, *data = NULL;
 
 	if (!success)
 		return; /* No need for error message, channels code sens one */
@@ -1732,12 +1747,9 @@ ssh_session2_setup(int id, int success, void *arg)
 	display = getenv("DISPLAY");
 	if (display == NULL && options.forward_x11)
 		debug("X11 forwarding requested but DISPLAY not set");
-	if (options.forward_x11 && display != NULL) {
-		char *proto, *data;
-		/* Get reasonable local authentication information. */
-		client_x11_get_proto(display, options.xauth_location,
-		    options.forward_x11_trusted,
-		    options.forward_x11_timeout, &proto, &data);
+	if (options.forward_x11 && client_x11_get_proto(display,
+	    options.xauth_location, options.forward_x11_trusted,
+	    options.forward_x11_timeout, &proto, &data) == 0) {
 		/* Request forwarding with authentication spoofing. */
 		debug("Requesting X11 forwarding with authentication "
 		    "spoofing.");
@@ -1886,9 +1898,6 @@ ssh_session2(void)
 		} else
 			fork_postauth();
 	}
-
-	if (options.use_roaming)
-		request_roaming();
 
 	return client_loop(tty_flag, tty_flag ?
 	    options.escape_char : SSH_ESCAPECHAR_NONE, id);

@@ -1,4 +1,4 @@
-/* $OpenBSD: monitor.c,v 1.153 2015/09/04 04:44:08 djm Exp $ */
+/* $OpenBSD: monitor.c,v 1.156 2016/01/14 16:17:39 markus Exp $ */
 /*
  * Copyright 2002 Niels Provos <provos@citi.umich.edu>
  * Copyright 2002 Markus Friedl <markus@openbsd.org>
@@ -77,7 +77,6 @@
 #include "monitor_fdpass.h"
 #include "compat.h"
 #include "ssh2.h"
-#include "roaming.h"
 #include "authfd.h"
 #include "match.h"
 #include "ssherr.h"
@@ -592,14 +591,16 @@ mm_answer_sign(int sock, Buffer *m)
 	struct sshbuf *sigbuf;
 	u_char *p;
 	u_char *signature;
-	size_t datlen, siglen;
+	char *alg;
+	size_t datlen, siglen, alglen;
 	int r, keyid, is_proof = 0;
 	const char proof_req[] = "hostkeys-prove-00@openssh.com";
 
 	debug3("%s", __func__);
 
 	if ((r = sshbuf_get_u32(m, &keyid)) != 0 ||
-	    (r = sshbuf_get_string(m, &p, &datlen)) != 0)
+	    (r = sshbuf_get_string(m, &p, &datlen)) != 0 ||
+	    (r = sshbuf_get_cstring(m, &alg, &alglen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 	/*
@@ -646,14 +647,14 @@ mm_answer_sign(int sock, Buffer *m)
 	}
 
 	if ((key = get_hostkey_by_index(keyid)) != NULL) {
-		if ((r = sshkey_sign(key, &signature, &siglen, p, datlen,
+		if ((r = sshkey_sign(key, &signature, &siglen, p, datlen, alg,
 		    datafellows)) != 0)
 			fatal("%s: sshkey_sign failed: %s",
 			    __func__, ssh_err(r));
 	} else if ((key = get_hostkey_public_by_index(keyid, ssh)) != NULL &&
 	    auth_sock > 0) {
 		if ((r = ssh_agent_sign(auth_sock, key, &signature, &siglen,
-		    p, datlen, datafellows)) != 0) {
+		    p, datlen, alg, datafellows)) != 0) {
 			fatal("%s: ssh_agent_sign failed: %s",
 			    __func__, ssh_err(r));
 		}
@@ -861,7 +862,7 @@ mm_answer_bsdauthrespond(int sock, Buffer *m)
 	char *response;
 	int authok;
 
-	if (authctxt->as == 0)
+	if (authctxt->as == NULL)
 		fatal("%s: no bsd auth session", __func__);
 
 	response = buffer_get_string(m, NULL);
@@ -1512,7 +1513,7 @@ monitor_apply_keystate(struct monitor *pmonitor)
 	sshbuf_free(child_state);
 	child_state = NULL;
 
-	if ((kex = ssh->kex) != 0) {
+	if ((kex = ssh->kex) != NULL) {
 		/* XXX set callbacks */
 #ifdef WITH_OPENSSL
 		kex->kex[KEX_DH_GRP1_SHA1] = kexdh_server;

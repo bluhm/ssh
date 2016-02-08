@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.64 2015/03/03 21:21:13 djm Exp $
+#	$OpenBSD: Makefile,v 1.66 2016/01/14 16:17:40 markus Exp $
 
 .PATH:		${.CURDIR}/..
 .include "${.CURDIR}/../Makefile.inc"
@@ -10,12 +10,9 @@ BINOWN=	root
 
 BINDIR=	/usr/bin
 MAN=	ssh.1 ssh_config.5
-LINKS=	${BINDIR}/ssh ${BINDIR}/slogin
-MLINKS=	ssh.1 slogin.1
 
 SRCS=	ssh.c readconf.c clientloop.c sshtty.c \
-	sshconnect.c sshconnect2.c mux.c \
-	roaming_common.c roaming_client.c
+	sshconnect.c sshconnect2.c mux.c
 
 .include <bsd.own.mk>
 

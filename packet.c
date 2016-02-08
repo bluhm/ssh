@@ -1,4 +1,4 @@
-/* $OpenBSD: packet.c,v 1.215 2015/09/21 04:31:00 djm Exp $ */
+/* $OpenBSD: packet.c,v 1.227 2016/02/04 23:43:48 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -77,7 +77,6 @@
 #include "channels.h"
 #include "ssh.h"
 #include "packet.h"
-#include "roaming.h"
 #include "ssherr.h"
 #include "sshbuf.h"
 
@@ -175,8 +174,7 @@ struct session_state {
 	struct packet_state p_read, p_send;
 
 	/* Volume-based rekeying */
-	u_int64_t max_blocks_in, max_blocks_out;
-	u_int32_t rekey_limit;
+	u_int64_t max_blocks_in, max_blocks_out, rekey_limit;
 
 	/* Time-based rekeying */
 	u_int32_t rekey_interval;	/* how often in seconds */
@@ -332,7 +330,8 @@ ssh_packet_stop_discard(struct ssh *ssh)
 		    sshbuf_ptr(state->incoming_packet), PACKET_MAX_SIZE,
 		    NULL, 0);
 	}
-	logit("Finished discarding for %.200s", ssh_remote_ipaddr(ssh));
+	logit("Finished discarding for %.200s port %d",
+	    ssh_remote_ipaddr(ssh), ssh_remote_port(ssh));
 	return SSH_ERR_MAC_INVALID;
 }
 
@@ -444,14 +443,28 @@ ssh_packet_get_connection_out(struct ssh *ssh)
 const char *
 ssh_remote_ipaddr(struct ssh *ssh)
 {
+	const int sock = ssh->state->connection_in;
+
 	/* Check whether we have cached the ipaddr. */
-	if (ssh->remote_ipaddr == NULL)
-		ssh->remote_ipaddr = ssh_packet_connection_is_on_socket(ssh) ?
-		    get_peer_ipaddr(ssh->state->connection_in) :
-		    strdup("UNKNOWN");
-	if (ssh->remote_ipaddr == NULL)
-		return "UNKNOWN";
+	if (ssh->remote_ipaddr == NULL) {
+		if (ssh_packet_connection_is_on_socket(ssh)) {
+			ssh->remote_ipaddr = get_peer_ipaddr(sock);
+			ssh->remote_port = get_sock_port(sock, 0);
+		} else {
+			ssh->remote_ipaddr = strdup("UNKNOWN");
+			ssh->remote_port = 0;
+		}
+	}
 	return ssh->remote_ipaddr;
+}
+
+/* Returns the port number of the remote host. */
+
+int
+ssh_remote_port(struct ssh *ssh)
+{
+	(void)ssh_remote_ipaddr(ssh); /* Will lookup and cache. */
+	return ssh->remote_port;
 }
 
 /* Closes the connection and clears and frees internal data structures. */
@@ -508,10 +521,8 @@ ssh_packet_close(struct ssh *ssh)
 		error("%s: cipher_cleanup failed: %s", __func__, ssh_err(r));
 	if ((r = cipher_cleanup(&state->receive_context)) != 0)
 		error("%s: cipher_cleanup failed: %s", __func__, ssh_err(r));
-	if (ssh->remote_ipaddr) {
-		free(ssh->remote_ipaddr);
-		ssh->remote_ipaddr = NULL;
-	}
+	free(ssh->remote_ipaddr);
+	ssh->remote_ipaddr = NULL;
 	free(ssh->state);
 	ssh->state = NULL;
 }
@@ -930,7 +941,12 @@ ssh_set_newkeys(struct ssh *ssh, int mode)
 		max_blocks = &state->max_blocks_in;
 	}
 	if (state->newkeys[mode] != NULL) {
-		debug("set_newkeys: rekeying");
+		debug("set_newkeys: rekeying, input %llu bytes %llu blocks, "
+		   "output %llu bytes %llu blocks",
+		   (unsigned long long)state->p_read.bytes,
+		   (unsigned long long)state->p_read.blocks,
+		   (unsigned long long)state->p_send.bytes,
+		   (unsigned long long)state->p_send.blocks);
 		if ((r = cipher_cleanup(cc)) != 0)
 			return r;
 		enc  = &state->newkeys[mode]->enc;
@@ -998,6 +1014,7 @@ ssh_set_newkeys(struct ssh *ssh, int mode)
 	if (state->rekey_limit)
 		*max_blocks = MIN(*max_blocks,
 		    state->rekey_limit / enc->block_size);
+	debug("rekey after %llu blocks", (unsigned long long)*max_blocks);
 	return 0;
 }
 
@@ -1039,6 +1056,20 @@ ssh_packet_enable_delayed_compress(struct ssh *ssh)
 	return 0;
 }
 
+/* Used to mute debug logging for noisy packet types */
+static int
+ssh_packet_log_type(u_char type)
+{
+	switch (type) {
+	case SSH2_MSG_CHANNEL_DATA:
+	case SSH2_MSG_CHANNEL_EXTENDED_DATA:
+	case SSH2_MSG_CHANNEL_WINDOW_ADJUST:
+		return 0;
+	default:
+		return 1;
+	}
+}
+
 /*
  * Finalize packet in SSH2 format (compress, mac, encrypt, enqueue)
  */
@@ -1067,7 +1098,8 @@ ssh_packet_send2_wrapped(struct ssh *ssh)
 	aadlen = (mac && mac->enabled && mac->etm) || authlen ? 4 : 0;
 
 	type = (sshbuf_ptr(state->outgoing_packet))[5];
-
+	if (ssh_packet_log_type(type))
+		debug3("send packet: type %u", type);
 #ifdef PACKET_DEBUG
 	fprintf(stderr, "plain:     ");
 	sshbuf_dump(state->outgoing_packet, stderr);
@@ -1204,7 +1236,8 @@ ssh_packet_send2(struct ssh *ssh)
 		if ((type < SSH2_MSG_TRANSPORT_MIN) ||
 		    (type > SSH2_MSG_TRANSPORT_MAX) ||
 		    (type == SSH2_MSG_SERVICE_REQUEST) ||
-		    (type == SSH2_MSG_SERVICE_ACCEPT)) {
+		    (type == SSH2_MSG_SERVICE_ACCEPT) ||
+		    (type == SSH2_MSG_EXT_INFO)) {
 			debug("enqueue packet: %u", type);
 			p = calloc(1, sizeof(*p));
 			if (p == NULL)
@@ -1254,7 +1287,7 @@ int
 ssh_packet_read_seqnr(struct ssh *ssh, u_char *typep, u_int32_t *seqnr_p)
 {
 	struct session_state *state = ssh->state;
-	int len, r, ms_remain, cont;
+	int len, r, ms_remain;
 	fd_set *setp;
 	char buf[8192];
 	struct timeval timeout, start, *timeoutp = NULL;
@@ -1323,11 +1356,7 @@ ssh_packet_read_seqnr(struct ssh *ssh, u_char *typep, u_int32_t *seqnr_p)
 		if (r == 0)
 			return SSH_ERR_CONN_TIMEOUT;
 		/* Read data from the socket. */
-		do {
-			cont = 0;
-			len = roaming_read(state->connection_in, buf,
-			    sizeof(buf), &cont);
-		} while (len == 0 && cont);
+		len = read(state->connection_in, buf, sizeof(buf));
 		if (len == 0) {
 			r = SSH_ERR_CONN_CLOSED;
 			goto out;
@@ -1569,6 +1598,7 @@ ssh_packet_read_poll2(struct ssh *ssh, u_char *typep, u_int32_t *seqnr_p)
 			logit("Bad packet length %u.", state->packlen);
 			if ((r = sshpkt_disconnect(ssh, "Packet corrupt")) != 0)
 				return r;
+			return SSH_ERR_CONN_CORRUPT;
 		}
 		sshbuf_reset(state->incoming_packet);
 	} else if (state->packlen == 0) {
@@ -1721,6 +1751,8 @@ ssh_packet_read_poll2(struct ssh *ssh, u_char *typep, u_int32_t *seqnr_p)
 	 */
 	if ((r = sshbuf_get_u8(state->incoming_packet, typep)) != 0)
 		goto out;
+	if (ssh_packet_log_type(*typep))
+		debug3("receive packet: type %u", *typep);
 	if (*typep < SSH2_MSG_MIN || *typep >= SSH2_MSG_LOCAL_MIN) {
 		if ((r = sshpkt_disconnect(ssh,
 		    "Invalid ssh2 packet type: %d", *typep)) != 0 ||
@@ -1770,8 +1802,7 @@ ssh_packet_read_poll_seqnr(struct ssh *ssh, u_char *typep, u_int32_t *seqnr_p)
 				if ((r = sshpkt_get_u8(ssh, NULL)) != 0 ||
 				    (r = sshpkt_get_string(ssh, &msg, NULL)) != 0 ||
 				    (r = sshpkt_get_string(ssh, NULL, NULL)) != 0) {
-					if (msg)
-						free(msg);
+					free(msg);
 					return r;
 				}
 				debug("Remote: %.900s", msg);
@@ -1785,8 +1816,9 @@ ssh_packet_read_poll_seqnr(struct ssh *ssh, u_char *typep, u_int32_t *seqnr_p)
 				do_log2(ssh->state->server_side &&
 				    reason == SSH2_DISCONNECT_BY_APPLICATION ?
 				    SYSLOG_LEVEL_INFO : SYSLOG_LEVEL_ERROR,
-				    "Received disconnect from %s: %u: %.400s",
-				    ssh_remote_ipaddr(ssh), reason, msg);
+				    "Received disconnect from %s port %d:"
+				    "%u: %.400s", ssh_remote_ipaddr(ssh),
+				    ssh_remote_port(ssh), reason, msg);
 				free(msg);
 				return SSH_ERR_DISCONNECTED;
 			case SSH2_MSG_UNIMPLEMENTED:
@@ -1814,8 +1846,9 @@ ssh_packet_read_poll_seqnr(struct ssh *ssh, u_char *typep, u_int32_t *seqnr_p)
 			case SSH_MSG_DISCONNECT:
 				if ((r = sshpkt_get_string(ssh, &msg, NULL)) != 0)
 					return r;
-				error("Received disconnect from %s: %.400s",
-				    ssh_remote_ipaddr(ssh), msg);
+				error("Received disconnect from %s port %d: "
+				    "%.400s", ssh_remote_ipaddr(ssh),
+				    ssh_remote_port(ssh), msg);
 				free(msg);
 				return SSH_ERR_DISCONNECTED;
 			default:
@@ -1905,19 +1938,22 @@ sshpkt_fatal(struct ssh *ssh, const char *tag, int r)
 {
 	switch (r) {
 	case SSH_ERR_CONN_CLOSED:
-		logit("Connection closed by %.200s", ssh_remote_ipaddr(ssh));
+		logit("Connection closed by %.200s port %d",
+		    ssh_remote_ipaddr(ssh), ssh_remote_port(ssh));
 		cleanup_exit(255);
 	case SSH_ERR_CONN_TIMEOUT:
-		logit("Connection to %.200s timed out", ssh_remote_ipaddr(ssh));
+		logit("Connection %s %.200s port %d timed out",
+		    ssh->state->server_side ? "from" : "to",
+		    ssh_remote_ipaddr(ssh), ssh_remote_port(ssh));
 		cleanup_exit(255);
 	case SSH_ERR_DISCONNECTED:
-		logit("Disconnected from %.200s",
-		    ssh_remote_ipaddr(ssh));
+		logit("Disconnected from %.200s port %d",
+		    ssh_remote_ipaddr(ssh), ssh_remote_port(ssh));
 		cleanup_exit(255);
 	case SSH_ERR_SYSTEM_ERROR:
 		if (errno == ECONNRESET) {
-			logit("Connection reset by %.200s",
-			    ssh_remote_ipaddr(ssh));
+			logit("Connection reset by %.200s port %d",
+			    ssh_remote_ipaddr(ssh), ssh_remote_port(ssh));
 			cleanup_exit(255);
 		}
 		/* FALLTHROUGH */
@@ -1927,15 +1963,17 @@ sshpkt_fatal(struct ssh *ssh, const char *tag, int r)
 	case SSH_ERR_NO_KEX_ALG_MATCH:
 	case SSH_ERR_NO_HOSTKEY_ALG_MATCH:
 		if (ssh && ssh->kex && ssh->kex->failed_choice) {
-			fatal("Unable to negotiate with %.200s: %s. "
+			fatal("Unable to negotiate with %.200s port %d: %s. "
 			    "Their offer: %s", ssh_remote_ipaddr(ssh),
-			    ssh_err(r), ssh->kex->failed_choice);
+			    ssh_remote_port(ssh), ssh_err(r),
+			    ssh->kex->failed_choice);
 		}
 		/* FALLTHROUGH */
 	default:
-		fatal("%s%sConnection to %.200s: %s",
+		fatal("%s%sConnection %s %.200s port %d: %s",
 		    tag != NULL ? tag : "", tag != NULL ? ": " : "",
-		    ssh_remote_ipaddr(ssh), ssh_err(r));
+		    ssh->state->server_side ? "from" : "to",
+		    ssh_remote_ipaddr(ssh), ssh_remote_port(ssh), ssh_err(r));
 	}
 }
 
@@ -1992,18 +2030,17 @@ ssh_packet_write_poll(struct ssh *ssh)
 {
 	struct session_state *state = ssh->state;
 	int len = sshbuf_len(state->output);
-	int cont, r;
+	int r;
 
 	if (len > 0) {
-		cont = 0;
-		len = roaming_write(state->connection_out,
-		    sshbuf_ptr(state->output), len, &cont);
+		len = write(state->connection_out,
+		    sshbuf_ptr(state->output), len);
 		if (len == -1) {
 			if (errno == EINTR || errno == EAGAIN)
 				return 0;
 			return SSH_ERR_SYSTEM_ERROR;
 		}
-		if (len == 0 && !cont)
+		if (len == 0)
 			return SSH_ERR_CONN_CLOSED;
 		if ((r = sshbuf_consume(state->output, len)) != 0)
 			return r;
@@ -2027,8 +2064,10 @@ ssh_packet_write_wait(struct ssh *ssh)
 	    NFDBITS), sizeof(fd_mask));
 	if (setp == NULL)
 		return SSH_ERR_ALLOC_FAIL;
-	if ((r = ssh_packet_write_poll(ssh)) != 0)
+	if ((r = ssh_packet_write_poll(ssh)) != 0) {
+		free(setp);
 		return r;
+	}
 	while (ssh_packet_have_data_to_write(ssh)) {
 		memset(setp, 0, howmany(state->connection_out + 1,
 		    NFDBITS) * sizeof(fd_mask));
@@ -2229,9 +2268,9 @@ ssh_packet_need_rekeying(struct ssh *ssh)
 }
 
 void
-ssh_packet_set_rekey_limits(struct ssh *ssh, u_int32_t bytes, time_t seconds)
+ssh_packet_set_rekey_limits(struct ssh *ssh, u_int64_t bytes, time_t seconds)
 {
-	debug3("rekey after %lld bytes, %d seconds", (long long)bytes,
+	debug3("rekey after %llu bytes, %d seconds", (unsigned long long)bytes,
 	    (int)seconds);
 	ssh->state->rekey_limit = bytes;
 	ssh->state->rekey_interval = seconds;
@@ -2269,58 +2308,6 @@ void *
 ssh_packet_get_output(struct ssh *ssh)
 {
 	return (void *)ssh->state->output;
-}
-
-/* XXX TODO update roaming to new API (does not work anyway) */
-/*
- * Save the state for the real connection, and use a separate state when
- * resuming a suspended connection.
- */
-void
-ssh_packet_backup_state(struct ssh *ssh,
-    struct ssh *backup_state)
-{
-	struct ssh *tmp;
-
-	close(ssh->state->connection_in);
-	ssh->state->connection_in = -1;
-	close(ssh->state->connection_out);
-	ssh->state->connection_out = -1;
-	if (backup_state)
-		tmp = backup_state;
-	else
-		tmp = ssh_alloc_session_state();
-	backup_state = ssh;
-	ssh = tmp;
-}
-
-/* XXX FIXME FIXME FIXME */
-/*
- * Swap in the old state when resuming a connecion.
- */
-void
-ssh_packet_restore_state(struct ssh *ssh,
-    struct ssh *backup_state)
-{
-	struct ssh *tmp;
-	u_int len;
-	int r;
-
-	tmp = backup_state;
-	backup_state = ssh;
-	ssh = tmp;
-	ssh->state->connection_in = backup_state->state->connection_in;
-	backup_state->state->connection_in = -1;
-	ssh->state->connection_out = backup_state->state->connection_out;
-	backup_state->state->connection_out = -1;
-	len = sshbuf_len(backup_state->state->input);
-	if (len > 0) {
-		if ((r = sshbuf_putb(ssh->state->input,
-		    backup_state->state->input)) != 0)
-			fatal("%s: %s", __func__, ssh_err(r));
-		sshbuf_reset(backup_state->state->input);
-		add_recv_bytes(len);
-	}
 }
 
 /* Reset after_authentication and reset compression in post-auth privsep */
@@ -2410,8 +2397,7 @@ newkeys_to_blob(struct sshbuf *m, struct ssh *ssh, int mode)
 		goto out;
 	r = sshbuf_put_stringb(m, b);
  out:
-	if (b != NULL)
-		sshbuf_free(b);
+	sshbuf_free(b);
 	return r;
 }
 
@@ -2442,7 +2428,7 @@ ssh_packet_get_state(struct ssh *ssh, struct sshbuf *m)
 		if ((r = kex_to_blob(m, ssh->kex)) != 0 ||
 		    (r = newkeys_to_blob(m, ssh, MODE_OUT)) != 0 ||
 		    (r = newkeys_to_blob(m, ssh, MODE_IN)) != 0 ||
-		    (r = sshbuf_put_u32(m, state->rekey_limit)) != 0 ||
+		    (r = sshbuf_put_u64(m, state->rekey_limit)) != 0 ||
 		    (r = sshbuf_put_u32(m, state->rekey_interval)) != 0 ||
 		    (r = sshbuf_put_u32(m, state->p_send.seqnr)) != 0 ||
 		    (r = sshbuf_put_u64(m, state->p_send.blocks)) != 0 ||
@@ -2473,11 +2459,6 @@ ssh_packet_get_state(struct ssh *ssh, struct sshbuf *m)
 	    (r = sshbuf_put_stringb(m, state->output)) != 0)
 		return r;
 
-	if (compat20) {
-		if ((r = sshbuf_put_u64(m, get_sent_bytes())) != 0 ||
-		    (r = sshbuf_put_u64(m, get_recv_bytes())) != 0)
-			return r;
-	}
 	return 0;
 }
 
@@ -2546,10 +2527,8 @@ newkeys_from_blob(struct sshbuf *m, struct ssh *ssh, int mode)
 	newkey = NULL;
 	r = 0;
  out:
-	if (newkey != NULL)
-		free(newkey);
-	if (b != NULL)
-		sshbuf_free(b);
+	free(newkey);
+	sshbuf_free(b);
 	return r;
 }
 
@@ -2582,10 +2561,8 @@ kex_from_blob(struct sshbuf *m, struct kex **kexp)
  out:
 	if (r != 0 || kexp == NULL) {
 		if (kex != NULL) {
-			if (kex->my != NULL)
-				sshbuf_free(kex->my);
-			if (kex->peer != NULL)
-				sshbuf_free(kex->peer);
+			sshbuf_free(kex->my);
+			sshbuf_free(kex->peer);
 			free(kex);
 		}
 		if (kexp != NULL)
@@ -2608,7 +2585,6 @@ ssh_packet_set_state(struct ssh *ssh, struct sshbuf *m)
 	size_t ssh1keylen, rlen, slen, ilen, olen;
 	int r;
 	u_int ssh1cipher = 0;
-	u_int64_t sent_bytes = 0, recv_bytes = 0;
 
 	if (!compat20) {
 		if ((r = sshbuf_get_u32(m, &state->remote_protocol_flags)) != 0 ||
@@ -2631,7 +2607,7 @@ ssh_packet_set_state(struct ssh *ssh, struct sshbuf *m)
 		if ((r = kex_from_blob(m, &ssh->kex)) != 0 ||
 		    (r = newkeys_from_blob(m, ssh, MODE_OUT)) != 0 ||
 		    (r = newkeys_from_blob(m, ssh, MODE_IN)) != 0 ||
-		    (r = sshbuf_get_u32(m, &state->rekey_limit)) != 0 ||
+		    (r = sshbuf_get_u64(m, &state->rekey_limit)) != 0 ||
 		    (r = sshbuf_get_u32(m, &state->rekey_interval)) != 0 ||
 		    (r = sshbuf_get_u32(m, &state->p_send.seqnr)) != 0 ||
 		    (r = sshbuf_get_u64(m, &state->p_send.blocks)) != 0 ||
@@ -2673,12 +2649,6 @@ ssh_packet_set_state(struct ssh *ssh, struct sshbuf *m)
 	    (r = sshbuf_put(state->output, output, olen)) != 0)
 		return r;
 
-	if (compat20) {
-		if ((r = sshbuf_get_u64(m, &sent_bytes)) != 0 ||
-		    (r = sshbuf_get_u64(m, &recv_bytes)) != 0)
-			return r;
-		roam_set_bytes(sent_bytes, recv_bytes);
-	}
 	if (sshbuf_len(m))
 		return SSH_ERR_INVALID_FORMAT;
 	debug3("%s: done", __func__);
