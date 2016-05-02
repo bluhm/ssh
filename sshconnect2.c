@@ -1,4 +1,4 @@
-/* $OpenBSD: sshconnect2.c,v 1.238 2016/02/05 04:31:21 jsg Exp $ */
+/* $OpenBSD: sshconnect2.c,v 1.243 2016/05/02 10:26:04 djm Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  * Copyright (c) 2008 Damien Miller.  All rights reserved.
@@ -200,6 +200,9 @@ ssh_kex2(char *host, struct sockaddr *hostaddr, u_short port)
 #ifdef WITH_OPENSSL
 	kex->kex[KEX_DH_GRP1_SHA1] = kexdh_client;
 	kex->kex[KEX_DH_GRP14_SHA1] = kexdh_client;
+	kex->kex[KEX_DH_GRP14_SHA256] = kexdh_client;
+	kex->kex[KEX_DH_GRP16_SHA512] = kexdh_client;
+	kex->kex[KEX_DH_GRP18_SHA512] = kexdh_client;
 	kex->kex[KEX_DH_GEX_SHA1] = kexgex_client;
 	kex->kex[KEX_DH_GEX_SHA256] = kexgex_client;
 	kex->kex[KEX_ECDH_SHA2] = kexecdh_client;
@@ -1031,7 +1034,7 @@ identity_sign(struct identity *id, u_char **sigp, size_t *lenp,
 		    compat));
 	/* load the private key from the file */
 	if ((prv = load_identity_file(id)) == NULL)
-		return (-1); /* XXX return decent error code */
+		return SSH_ERR_KEY_NOT_FOUND;
 	ret = sshkey_sign(prv, sigp, lenp, data, datalen, alg, compat);
 	sshkey_free(prv);
 	return (ret);
@@ -1086,8 +1089,8 @@ sign_and_send_pubkey(Authctxt *authctxt, Identity *id)
 	/*
 	 * If the key is an certificate, try to find a matching private key
 	 * and use it to complete the signature.
-	 * If no such private key exists, return failure and continue with
-	 * other methods of authentication.
+	 * If no such private key exists, fall back to trying the certificate
+	 * key itself in case it has a private half already loaded.
 	 */
 	if (key_is_cert(id->key)) {
 		matched = 0;
@@ -1104,12 +1107,8 @@ sign_and_send_pubkey(Authctxt *authctxt, Identity *id)
 			    "certificate", __func__, id->filename,
 			    id->agent_fd != -1 ? " from agent" : "");
 		} else {
-			/* XXX maybe verbose/error? */
-			debug("%s: no private key for certificate "
+			debug("%s: no separate private key for certificate "
 			    "\"%s\"", __func__, id->filename);
-			free(blob);
-			buffer_free(&b);
-			return 0;
 		}
 	}
 
@@ -1117,7 +1116,8 @@ sign_and_send_pubkey(Authctxt *authctxt, Identity *id)
 	ret = identity_sign(id, &signature, &slen,
 	    buffer_ptr(&b), buffer_len(&b), datafellows);
 	if (ret != 0) {
-		error("%s: signing failed: %s", __func__, ssh_err(ret));
+		if (ret != SSH_ERR_KEY_NOT_FOUND)
+			error("%s: signing failed: %s", __func__, ssh_err(ret));
 		free(blob);
 		buffer_free(&b);
 		return 0;
@@ -1917,8 +1917,8 @@ authmethods_get(void)
 			buffer_append(&b, method->name, strlen(method->name));
 		}
 	}
-	buffer_append(&b, "\0", 1);
-	list = xstrdup(buffer_ptr(&b));
+	if ((list = sshbuf_dup_string(&b)) == NULL)
+		fatal("%s: sshbuf_dup_string failed", __func__);
 	buffer_free(&b);
 	return list;
 }
