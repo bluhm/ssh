@@ -1,4 +1,4 @@
-/* $OpenBSD: ssh_api.c,v 1.6 2016/05/02 10:26:04 djm Exp $ */
+/* $OpenBSD: ssh_api.c,v 1.8 2017/04/30 23:13:25 djm Exp $ */
 /*
  * Copyright (c) 2012 Markus Friedl.  All rights reserved.
  *
@@ -15,14 +15,12 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "ssh1.h" /* For SSH_MSG_NONE */
 #include "ssh_api.h"
 #include "compat.h"
 #include "log.h"
 #include "authfile.h"
 #include "sshkey.h"
 #include "misc.h"
-#include "ssh1.h"
 #include "ssh2.h"
 #include "version.h"
 #include "myproposal.h"
@@ -365,7 +363,6 @@ _ssh_read_banner(struct ssh *ssh, char **bannerp)
 	}
 	if (remote_major != 2)
 		return SSH_ERR_PROTOCOL_MISMATCH;
-	enable_compat20();
 	chop(buf);
 	debug("Remote version string %.100s", buf);
 	if ((*bannerp = strdup(buf)) == NULL)

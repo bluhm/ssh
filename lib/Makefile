@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.84 2016/01/14 16:17:40 markus Exp $
+#	$OpenBSD: Makefile,v 1.88 2017/04/30 23:26:16 djm Exp $
 
 .PATH:		${.CURDIR}/..
 .include "${.CURDIR}/../Makefile.inc"
@@ -25,19 +25,15 @@ LIB_SRCS+=	digest-libc.c
 SRCS=	${LIB_SRCS} \
 	authfd.c authfile.c bufaux.c buffer.c canohost.c \
 	channels.c cipher.c \
-	cleanup.c compat.c crc32.c deattack.c fatal.c \
+	cleanup.c compat.c crc32.c fatal.c \
 	hostfile.c log.c match.c nchan.c packet.c opacket.c readpass.c \
 	ttymodes.c xmalloc.c atomicio.c \
-	key.c dispatch.c kex.c mac.c uidswap.c uuencode.c misc.c \
+	key.c dispatch.c kex.c mac.c uidswap.c uuencode.c misc.c utf8.c \
 	msg.c progressmeter.c dns.c \
 	monitor_fdpass.c addrmatch.c \
 	smult_curve25519_ref.c \
 	kexc25519.c kexc25519c.c kexc25519s.c \
 	chacha.c poly1305.c cipher-chachapoly.c ssh-ed25519.c hmac.c umac.c
-
-.if (${SSH1:L} == "yes")
-SRCS+=	cipher-3des1.c cipher-bf1.c
-.endif
 
 .if (${OPENSSL:L} == "yes")
 SRCS+=	bufec.c bufbn.c rsa.c \
@@ -64,7 +60,6 @@ umac128.c: umac.c Makefile
 	    -e s/umac_delete/umac128_delete/g \
 	    < ${.CURDIR}/../umac.c > ${.TARGET}
 
-DEBUGLIBS= no
 NOPROFILE= yes
 NOPIC=	yes
 

@@ -1,4 +1,4 @@
-/* $OpenBSD: misc.h,v 1.56 2016/04/06 06:42:17 djm Exp $ */
+/* $OpenBSD: misc.h,v 1.61 2016/11/30 00:28:31 dtucker Exp $ */
 
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
@@ -15,6 +15,8 @@
 #ifndef _MISC_H
 #define _MISC_H
 
+#include <sys/time.h>
+
 /* Data structure for representing a forwarding request. */
 struct Forward {
 	char	 *listen_host;		/* Host (address) to listen on. */
@@ -28,6 +30,8 @@ struct Forward {
 };
 
 int forward_equals(const struct Forward *, const struct Forward *);
+int bind_permitted(int, uid_t);
+int daemonized(void);
 
 /* Common server and client forwarding options. */
 struct ForwardOptions {
@@ -49,6 +53,7 @@ char	*put_host_port(const char *, u_short);
 char	*hpdelim(char **);
 char	*cleanhostname(char *);
 char	*colon(char *);
+int	 parse_user_host_port(const char *, char **, char **, int *);
 long	 convtime(const char *);
 char	*tilde_expand_filename(const char *, uid_t);
 char	*percent_expand(const char *, ...) __attribute__((__sentinel__));
@@ -135,5 +140,9 @@ void mktemp_proto(char *, size_t);
 char	*read_passphrase(const char *, int);
 int	 ask_permission(const char *, ...) __attribute__((format(printf, 1, 2)));
 int	 read_keyfile_line(FILE *, const char *, char *, size_t, u_long *);
+
+#define MINIMUM(a, b)	(((a) < (b)) ? (a) : (b))
+#define MAXIMUM(a, b)	(((a) > (b)) ? (a) : (b))
+#define ROUNDUP(x, y)   ((((x)+((y)-1))/(y))*(y))
 
 #endif /* _MISC_H */

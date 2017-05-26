@@ -1,4 +1,4 @@
-/* $OpenBSD: misc.c,v 1.104 2016/04/06 06:42:17 djm Exp $ */
+/* $OpenBSD: misc.c,v 1.109 2017/03/14 00:55:37 dtucker Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  * Copyright (c) 2005,2006 Damien Miller.  All rights reserved.
@@ -289,7 +289,7 @@ a2tun(const char *s, int *remote)
 long
 convtime(const char *s)
 {
-	long total, secs;
+	long total, secs, multiplier = 1;
 	const char *p;
 	char *endp;
 
@@ -316,23 +316,28 @@ convtime(const char *s)
 			break;
 		case 'm':
 		case 'M':
-			secs *= MINUTES;
+			multiplier = MINUTES;
 			break;
 		case 'h':
 		case 'H':
-			secs *= HOURS;
+			multiplier = HOURS;
 			break;
 		case 'd':
 		case 'D':
-			secs *= DAYS;
+			multiplier = DAYS;
 			break;
 		case 'w':
 		case 'W':
-			secs *= WEEKS;
+			multiplier = WEEKS;
 			break;
 		default:
 			return -1;
 		}
+		if (secs >= LONG_MAX / multiplier)
+			return -1;
+		secs *= multiplier;
+		if  (total >= LONG_MAX - secs)
+			return -1;
 		total += secs;
 		if (total < 0)
 			return -1;
@@ -432,6 +437,67 @@ colon(char *cp)
 			return NULL;
 	}
 	return NULL;
+}
+
+/*
+ * Parse a [user@]host[:port] string.
+ * Caller must free returned user and host.
+ * Any of the pointer return arguments may be NULL (useful for syntax checking).
+ * If user was not specified then *userp will be set to NULL.
+ * If port was not specified then *portp will be -1.
+ * Returns 0 on success, -1 on failure.
+ */
+int
+parse_user_host_port(const char *s, char **userp, char **hostp, int *portp)
+{
+	char *sdup, *cp, *tmp;
+	char *user = NULL, *host = NULL;
+	int port = -1, ret = -1;
+
+	if (userp != NULL)
+		*userp = NULL;
+	if (hostp != NULL)
+		*hostp = NULL;
+	if (portp != NULL)
+		*portp = -1;
+
+	if ((sdup = tmp = strdup(s)) == NULL)
+		return -1;
+	/* Extract optional username */
+	if ((cp = strchr(tmp, '@')) != NULL) {
+		*cp = '\0';
+		if (*tmp == '\0')
+			goto out;
+		if ((user = strdup(tmp)) == NULL)
+			goto out;
+		tmp = cp + 1;
+	}
+	/* Extract mandatory hostname */
+	if ((cp = hpdelim(&tmp)) == NULL || *cp == '\0')
+		goto out;
+	host = xstrdup(cleanhostname(cp));
+	/* Convert and verify optional port */
+	if (tmp != NULL && *tmp != '\0') {
+		if ((port = a2port(tmp)) <= 0)
+			goto out;
+	}
+	/* Success */
+	if (userp != NULL) {
+		*userp = user;
+		user = NULL;
+	}
+	if (hostp != NULL) {
+		*hostp = host;
+		host = NULL;
+	}
+	if (portp != NULL)
+		*portp = port;
+	ret = 0;
+ out:
+	free(sdup);
+	free(user);
+	free(host);
+	return ret;
 }
 
 /* function to assist building execv() arguments */
@@ -1118,3 +1184,29 @@ forward_equals(const struct Forward *a, const struct Forward *b)
 	return 1;
 }
 
+/* returns 1 if bind to specified port by specified user is permitted */
+int
+bind_permitted(int port, uid_t uid)
+{
+	if (port < IPPORT_RESERVED && uid != 0)
+		return 0;
+	return 1;
+}
+
+/* returns 1 if process is already daemonized, 0 otherwise */
+int
+daemonized(void)
+{
+	int fd;
+
+	if ((fd = open(_PATH_TTY, O_RDONLY | O_NOCTTY)) >= 0) {
+		close(fd);
+		return 0;	/* have controlling terminal */
+	}
+	if (getppid() != 1)
+		return 0;	/* parent is not init */
+	if (getsid(0) != getpid())
+		return 0;	/* not session leader */
+	debug3("already daemonized");
+	return 1;
+}
