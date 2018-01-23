@@ -1,4 +1,4 @@
-/* $OpenBSD: kexc25519c.c,v 1.7 2015/01/26 06:10:03 djm Exp $ */
+/* $OpenBSD: kexc25519c.c,v 1.9 2017/12/18 02:25:15 djm Exp $ */
 /*
  * Copyright (c) 2001 Markus Friedl.  All rights reserved.
  * Copyright (c) 2010 Damien Miller.  All rights reserved.
@@ -42,7 +42,7 @@
 #include "ssherr.h"
 
 static int
-input_kex_c25519_reply(int type, u_int32_t seq, void *ctxt);
+input_kex_c25519_reply(int type, u_int32_t seq, struct ssh *ssh);
 
 int
 kexc25519_client(struct ssh *ssh)
@@ -67,9 +67,8 @@ kexc25519_client(struct ssh *ssh)
 }
 
 static int
-input_kex_c25519_reply(int type, u_int32_t seq, void *ctxt)
+input_kex_c25519_reply(int type, u_int32_t seq, struct ssh *ssh)
 {
-	struct ssh *ssh = ctxt;
 	struct kex *kex = ssh->kex;
 	struct sshkey *server_host_key = NULL;
 	struct sshbuf *shared_secret = NULL;
@@ -140,7 +139,7 @@ input_kex_c25519_reply(int type, u_int32_t seq, void *ctxt)
 		goto out;
 
 	if ((r = sshkey_verify(server_host_key, signature, slen, hash, hashlen,
-	    ssh->compat)) != 0)
+	    kex->hostkey_alg, ssh->compat)) != 0)
 		goto out;
 
 	/* save session id */

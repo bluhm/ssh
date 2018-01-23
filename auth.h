@@ -1,4 +1,4 @@
-/* $OpenBSD: auth.h,v 1.91 2017/05/30 14:29:59 markus Exp $ */
+/* $OpenBSD: auth.h,v 1.94 2018/01/08 15:21:49 markus Exp $ */
 
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
@@ -57,22 +57,34 @@ struct Authctxt {
 	char		*service;
 	struct passwd	*pw;		/* set if 'valid' */
 	char		*style;
-	void		*kbdintctxt;
-	char		*info;		/* Extra info for next auth_log */
-	auth_session_t	*as;
+
+	/* Method lists for multiple authentication */
 	char		**auth_methods;	/* modified from server config */
 	u_int		 num_auth_methods;
+
+	/* Authentication method-specific data */
+	void		*methoddata;
+	void		*kbdintctxt;
+	auth_session_t	*as;
 #ifdef KRB5
 	krb5_context	 krb5_ctx;
 	krb5_ccache	 krb5_fwd_ccache;
 	krb5_principal	 krb5_user;
 	char		*krb5_ticket_file;
 #endif
-	void		*methoddata;
 
-	struct sshkey	**prev_userkeys;
-	u_int		 nprev_userkeys;
+	/* Authentication keys already used; these will be refused henceforth */
+	struct sshkey	**prev_keys;
+	u_int		 nprev_keys;
+
+	/* Last used key and ancilliary information from active auth method */
+	struct sshkey	*auth_method_key;
+	char		*auth_method_info;
+
+	/* Information exposed to session */
+	struct sshbuf	*session_info;	/* Auth info for environment */
 };
+
 /*
  * Every authentication method has to handle authentication requests for
  * non-existing users, or for users that are not allowed to login. In this
@@ -111,14 +123,18 @@ int      auth_password(Authctxt *, const char *);
 int	 hostbased_key_allowed(struct passwd *, const char *, char *,
 	    struct sshkey *);
 int	 user_key_allowed(struct passwd *, struct sshkey *, int);
-void	 pubkey_auth_info(Authctxt *, const struct sshkey *, const char *, ...)
-	    __attribute__((__format__ (printf, 3, 4)));
-void	 auth2_record_userkey(Authctxt *, struct sshkey *);
-int	 auth2_userkey_already_used(Authctxt *, struct sshkey *);
+int	 auth2_key_already_used(Authctxt *, const struct sshkey *);
 
-struct stat;
-int	 auth_secure_path(const char *, struct stat *, const char *, uid_t,
-    char *, size_t);
+/*
+ * Handling auth method-specific information for logging and prevention
+ * of key reuse during multiple authentication.
+ */
+void	 auth2_authctxt_reset_info(Authctxt *);
+void	 auth2_record_key(Authctxt *, int, const struct sshkey *);
+void	 auth2_record_info(Authctxt *authctxt, const char *, ...)
+	    __attribute__((__format__ (printf, 2, 3)))
+	    __attribute__((__nonnull__ (2)));
+void	 auth2_update_session_info(Authctxt *, const char *, const char *);
 
 #ifdef KRB5
 int	auth_krb5(Authctxt *authctxt, krb5_data *auth, char **client, krb5_data *);
@@ -129,9 +145,6 @@ void	krb5_cleanup_proc(Authctxt *authctxt);
 
 void	do_authentication2(Authctxt *);
 
-void	auth_info(Authctxt *authctxt, const char *, ...)
-	    __attribute__((__format__ (printf, 2, 3)))
-	    __attribute__((__nonnull__ (2)));
 void	auth_log(Authctxt *, int, int, const char *, const char *);
 void	auth_maxtries_exceeded(Authctxt *) __attribute__((noreturn));
 void	userauth_finish(struct ssh *, int, const char *, const char *);
@@ -181,5 +194,11 @@ void	 auth_debug_send(void);
 void	 auth_debug_reset(void);
 
 struct passwd *fakepw(void);
+
+#define	SSH_SUBPROCESS_STDOUT_DISCARD  (1)     /* Discard stdout */
+#define	SSH_SUBPROCESS_STDOUT_CAPTURE  (1<<1)  /* Redirect stdout */
+#define	SSH_SUBPROCESS_STDERR_DISCARD  (1<<2)  /* Discard stderr */
+pid_t	subprocess(const char *, struct passwd *,
+    const char *, int, char **, FILE **, u_int flags);
 
 #endif

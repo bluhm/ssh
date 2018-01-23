@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile.inc,v 1.54 2017/04/30 23:25:03 djm Exp $
+#	$OpenBSD: Makefile.inc,v 1.57 2018/01/08 15:37:21 markus Exp $
 
 .include <bsd.own.mk>
 
@@ -6,36 +6,23 @@ CFLAGS+=	-I${.CURDIR}/..
 CFLAGS+=	-fstack-protector-all
 
 CDIAGFLAGS=	-Wall
-CDIAGFLAGS+=	-Wchar-subscripts
-CDIAGFLAGS+=	-Wcomment
 CDIAGFLAGS+=	-Wextra
-CDIAGFLAGS+=	-Wformat
 CDIAGFLAGS+=	-Wformat-security
-CDIAGFLAGS+=	-Wimplicit
-CDIAGFLAGS+=	-Winline
 CDIAGFLAGS+=	-Wmissing-declarations
 CDIAGFLAGS+=	-Wmissing-prototypes
-CDIAGFLAGS+=	-Wparentheses
 CDIAGFLAGS+=	-Wpointer-arith
-CDIAGFLAGS+=	-Wreturn-type
 CDIAGFLAGS+=	-Wshadow
-CDIAGFLAGS+=	-Wsign-compare
-CDIAGFLAGS+=	-Wstrict-aliasing
 CDIAGFLAGS+=	-Wstrict-prototypes
-CDIAGFLAGS+=	-Wswitch
-CDIAGFLAGS+=	-Wtrigraphs
-CDIAGFLAGS+=	-Wuninitialized
 CDIAGFLAGS+=	-Wunused
+CDIAGFLAGS+=	-Wno-unused-parameter # Lots of these in protocol handlers.
 .if ${COMPILER_VERSION:L} != "gcc3"
+CDIAGFLAGS+=	-Wstrict-aliasing=2
 CDIAGFLAGS+=	-Wold-style-definition
 .endif
-CDIAGFLAGS+=	-Wno-unused-parameter # Not clean for this yet
-#CDIAGFLAGS+=	-Wwrite-strings # XXX too messy; needs libc changes
-#CDIAGFLAGS+=	-Wcast-qual # XXX not clean
-#CDIAGFLAGS+=	-Wcast-align # XXX can't be clean with sockaddr casts?
 
 #CDIAGFLAGS+=	-Werror
 #DEBUG=-g
+#INSTALL_STRIP=
 
 WARNINGS=yes
 
@@ -50,14 +37,89 @@ CFLAGS+=	-DENABLE_PKCS11
 CFLAGS+=	-DHAVE_DLOPEN
 .endif
 
-.include <bsd.obj.mk>
+SRCS_BASE+=	sshbuf.c
+SRCS_BASE+=	sshbuf-getput-basic.c
+SRCS_BASE+=	ssherr.c
+SRCS_BASE+=	log.c
+SRCS_BASE+=	xmalloc.c
+SRCS_BASE+=	misc.c
 
-.if exists(${.CURDIR}/../lib/${__objdir})
-LDADD+=         -L${.CURDIR}/../lib/${__objdir} -lssh
-DPADD+=         ${.CURDIR}/../lib/${__objdir}/libssh.a
+.if (${OPENSSL:L} == "yes")
+SRCS_KEX+=	dh.c
+SRCS_KEX+=	kexdh.c
+SRCS_KEX+=	kexecdh.c
+SRCS_KEX+=	kexgex.c
+SRCS_KEXC+=	kexdhc.c
+SRCS_KEXC+=	kexecdhc.c
+SRCS_KEXC+=	kexgexc.c
+SRCS_KEXS+=	kexdhs.c
+SRCS_KEXS+=	kexecdhs.c
+SRCS_KEXS+=	kexgexs.c
+.endif
+SRCS_KEX+=	kexc25519.c
+SRCS_KEX+=	smult_curve25519_ref.c
+SRCS_KEXC+=	kexc25519c.c
+SRCS_KEXS+=	kexc25519s.c
+
+SRCS_KEY+=	sshkey.c
+SRCS_KEY+=	sshbuf-misc.c
+SRCS_KEY+=	cipher.c
+SRCS_KEY+=	cipher-chachapoly.c
+SRCS_KEY+=	chacha.c
+SRCS_KEY+=	poly1305.c
+.if (${OPENSSL:L} == "yes")
+SRCS_KEY+=	ssh-dss.c
+SRCS_KEY+=	ssh-ecdsa.c
+SRCS_KEY+=	ssh-rsa.c
+SRCS_KEY+=	sshbuf-getput-crypto.c
+SRCS_KEY+=	digest-openssl.c
 .else
-LDADD+=         -L${.CURDIR}/../lib -lssh
-DPADD+=         ${.CURDIR}/../lib/libssh.a
+SRCS_KEY+=	cipher-aesctr.c
+SRCS_KEY+=	rijndael.c
+SRCS_KEY+=	digest-libc.c
+.endif
+SRCS_KEY+=	ssh-ed25519.c
+# ed25519, from supercop
+SRCS_KEY+=	sc25519.c
+SRCS_KEY+=	ge25519.c
+SRCS_KEY+=	fe25519.c
+SRCS_KEY+=	ed25519.c
+SRCS_KEY+=	verify.c
+SRCS_KEY+=	hash.c
+
+SRCS_KEYP+=	authfile.c
+
+SRCS_KRL+=	bitmap.c
+SRCS_KRL+=	krl.c
+
+SRCS_PKT+=	canohost.c
+SRCS_PKT+=	dispatch.c
+SRCS_PKT+=	hmac.c
+SRCS_PKT+=	kex.c
+SRCS_PKT+=	mac.c
+SRCS_PKT+=	packet.c
+SRCS_PKT+=	umac.c
+SRCS_PKT+=	umac128.c
+
+.if (${OPENSSL:L} == "yes")
+SRCS_PROT+=	bufbn.c
+SRCS_PROT+=	bufec.c
+.endif
+SRCS_PROT+=	channels.c
+SRCS_PROT+=	crc32.c
+SRCS_PROT+=	monitor_fdpass.c
+SRCS_PROT+=	nchan.c
+SRCS_PROT+=	opacket.c
+SRCS_PROT+=	ttymodes.c
+
+SRCS_UTL+=	addrmatch.c
+SRCS_UTL+=	match.c
+SRCS_UTL+=	uidswap.c
+
+.if (${OPENSSL:L} == "yes")
+SRCS_PKCS11+=	ssh-pkcs11.c
+.else
+SRCS_PKCS11+=
 .endif
 
-LDADD+=		-lutil
+.include <bsd.obj.mk>

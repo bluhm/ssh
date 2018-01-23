@@ -1,4 +1,4 @@
-/* $OpenBSD: sshconnect2.c,v 1.261 2017/05/30 14:23:52 markus Exp $ */
+/* $OpenBSD: sshconnect2.c,v 1.266 2017/08/27 00:38:41 dtucker Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  * Copyright (c) 2008 Damien Miller.  All rights reserved.
@@ -209,7 +209,7 @@ ssh_kex2(char *host, struct sockaddr *hostaddr, u_short port)
 	kex->server_version_string=server_version_string;
 	kex->verify_host_key=&verify_host_key_callback;
 
-	dispatch_run(DISPATCH_BLOCK, &kex->done, active_state);
+	ssh_dispatch_run_fatal(active_state, DISPATCH_BLOCK, &kex->done);
 
 	/* remove ext-info from the KEX proposals for rekeying */
 	myproposal[PROPOSAL_KEX_ALGS] =
@@ -393,7 +393,7 @@ ssh_userauth2(const char *local_user, const char *server_user, char *host,
 	ssh_dispatch_init(ssh, &input_userauth_error);
 	ssh_dispatch_set(ssh, SSH2_MSG_EXT_INFO, &input_userauth_ext_info);
 	ssh_dispatch_set(ssh, SSH2_MSG_SERVICE_ACCEPT, &input_userauth_service_accept);
-	ssh_dispatch_run(ssh, DISPATCH_BLOCK, &authctxt.success, ssh);	/* loop until success */
+	ssh_dispatch_run_fatal(ssh, DISPATCH_BLOCK, &authctxt.success);	/* loop until success */
 	ssh->authctxt = NULL;
 
 	pubkey_cleanup(&authctxt);
@@ -461,7 +461,8 @@ userauth(Authctxt *authctxt, char *authlist)
 	for (;;) {
 		Authmethod *method = authmethod_get(authlist);
 		if (method == NULL)
-			fatal("Permission denied (%s).", authlist);
+			fatal("%s@%s: Permission denied (%s).",
+			    authctxt->server_user, authctxt->host, authlist);
 		authctxt->method = method;
 
 		/* reset the per method handler */
@@ -695,9 +696,8 @@ userauth_gssapi(Authctxt *authctxt)
 }
 
 static OM_uint32
-process_gssapi_token(void *ctxt, gss_buffer_t recv_tok)
+process_gssapi_token(struct ssh *ssh, gss_buffer_t recv_tok)
 {
-	struct ssh *ssh = ctxt;
 	Authctxt *authctxt = ssh->authctxt;
 	Gssctxt *gssctxt = authctxt->methoddata;
 	gss_buffer_desc send_tok = GSS_C_EMPTY_BUFFER;
@@ -781,7 +781,7 @@ input_gssapi_response(int type, u_int32_t plen, struct ssh *ssh)
 
 	free(oidv);
 
-	if (GSS_ERROR(process_gssapi_token(ctxt, GSS_C_NO_BUFFER))) {
+	if (GSS_ERROR(process_gssapi_token(ssh, GSS_C_NO_BUFFER))) {
 		/* Start again with next method on list */
 		debug("Trying to start again");
 		userauth(authctxt, NULL);
@@ -807,7 +807,7 @@ input_gssapi_token(int type, u_int32_t plen, struct ssh *ssh)
 
 	packet_check_eom();
 
-	status = process_gssapi_token(ctxt, &recv_tok);
+	status = process_gssapi_token(ssh, &recv_tok);
 
 	free(recv_tok.value);
 
@@ -887,7 +887,7 @@ int
 userauth_passwd(Authctxt *authctxt)
 {
 	static int attempt = 0;
-	char prompt[150];
+	char prompt[256];
 	char *password;
 	const char *host = options.host_key_alias ?  options.host_key_alias :
 	    authctxt->host;
@@ -927,7 +927,7 @@ input_userauth_passwd_changereq(int type, u_int32_t seqnr, struct ssh *ssh)
 {
 	Authctxt *authctxt = ssh->authctxt;
 	char *info, *lang, *password = NULL, *retype = NULL;
-	char prompt[150];
+	char prompt[256];
 	const char *host;
 
 	debug2("input_userauth_passwd_changereq");
@@ -1029,6 +1029,11 @@ identity_sign(struct identity *id, u_char **sigp, size_t *lenp,
 	/* load the private key from the file */
 	if ((prv = load_identity_file(id)) == NULL)
 		return SSH_ERR_KEY_NOT_FOUND;
+	if (id->key != NULL && !sshkey_equal_public(prv, id->key)) {
+		error("%s: private key %s contents do not match public",
+		   __func__, id->filename);
+		return SSH_ERR_KEY_NOT_FOUND;
+	}
 	ret = sshkey_sign(prv, sigp, lenp, data, datalen,
 	    key_sign_encode(prv), compat);
 	sshkey_free(prv);

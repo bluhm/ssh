@@ -1,4 +1,4 @@
-/* $OpenBSD: monitor_wrap.h,v 1.34 2017/05/30 14:10:53 markus Exp $ */
+/* $OpenBSD: monitor_wrap.h,v 1.36 2017/12/18 02:25:15 djm Exp $ */
 
 /*
  * Copyright 2002 Niels Provos <provos@citi.umich.edu>
@@ -34,7 +34,6 @@ extern int use_privsep;
 enum mm_keytype { MM_NOKEY, MM_HOSTKEY, MM_USERKEY };
 
 struct monitor;
-struct mm_master;
 struct Authctxt;
 
 void mm_log_handler(LogLevel, const char *, void *);
@@ -52,7 +51,7 @@ int mm_user_key_allowed(struct passwd *, struct sshkey *, int);
 int mm_hostbased_key_allowed(struct passwd *, const char *,
     const char *, struct sshkey *);
 int mm_sshkey_verify(const struct sshkey *, const u_char *, size_t,
-    const u_char *, size_t, u_int);
+    const u_char *, size_t, const char *, u_int);
 
 #ifdef GSSAPI
 OM_uint32 mm_ssh_gssapi_server_ctx(Gssctxt **, gss_OID);
@@ -71,6 +70,7 @@ void mm_session_pty_cleanup2(struct Session *);
 struct newkeys *mm_newkeys_from_blob(u_char *, int);
 int mm_newkeys_to_blob(int, u_char **, u_int *);
 
+void monitor_clear_keystate(struct monitor *);
 void monitor_apply_keystate(struct monitor *);
 void mm_get_keystate(struct monitor *);
 void mm_send_keystate(struct monitor*);

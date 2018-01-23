@@ -1,4 +1,4 @@
-/* $OpenBSD: monitor.c,v 1.169 2017/05/30 14:10:53 markus Exp $ */
+/* $OpenBSD: monitor.c,v 1.177 2017/12/21 00:00:28 djm Exp $ */
 /*
  * Copyright 2002 Niels Provos <provos@citi.umich.edu>
  * Copyright 2002 Markus Friedl <markus@openbsd.org>
@@ -247,6 +247,8 @@ monitor_child_preauth(Authctxt *_authctxt, struct monitor *pmonitor)
 		partial = 0;
 		auth_method = "unknown";
 		auth_submethod = NULL;
+		auth2_authctxt_reset_info(authctxt);
+
 		authenticated = (monitor_read(pmonitor, mon_dispatch, &ent) == 1);
 
 		/* Special handling for multiple required authentications */
@@ -274,6 +276,10 @@ monitor_child_preauth(Authctxt *_authctxt, struct monitor *pmonitor)
 			    auth_method, auth_submethod);
 			if (!partial && !authenticated)
 				authctxt->failures++;
+			if (authenticated || partial) {
+				auth2_update_session_info(authctxt,
+				    auth_method, auth_submethod);
+			}
 		}
 	}
 
@@ -856,12 +862,11 @@ mm_answer_keyallowed(int sock, Buffer *m)
 		switch (type) {
 		case MM_USERKEY:
 			allowed = options.pubkey_authentication &&
-			    !auth2_userkey_already_used(authctxt, key) &&
+			    !auth2_key_already_used(authctxt, key) &&
 			    match_pattern_list(sshkey_ssh_name(key),
 			    options.pubkey_key_types, 0) == 1 &&
 			    user_key_allowed(authctxt->pw, key,
 			    pubkey_auth_attempt);
-			pubkey_auth_info(authctxt, key, NULL);
 			auth_method = "publickey";
 			if (options.pubkey_authentication &&
 			    (!pubkey_auth_attempt || allowed != 1))
@@ -869,11 +874,12 @@ mm_answer_keyallowed(int sock, Buffer *m)
 			break;
 		case MM_HOSTKEY:
 			allowed = options.hostbased_authentication &&
+			    !auth2_key_already_used(authctxt, key) &&
 			    match_pattern_list(sshkey_ssh_name(key),
 			    options.hostbased_key_types, 0) == 1 &&
 			    hostbased_key_allowed(authctxt->pw,
 			    cuser, chost, key);
-			pubkey_auth_info(authctxt, key,
+			auth2_record_info(authctxt,
 			    "client user \"%.100s\", client host \"%.100s\"",
 			    cuser, chost);
 			auth_method = "hostbased";
@@ -884,11 +890,10 @@ mm_answer_keyallowed(int sock, Buffer *m)
 		}
 	}
 
-	debug3("%s: key %p is %s",
-	    __func__, key, allowed ? "allowed" : "not allowed");
+	debug3("%s: key is %s", __func__, allowed ? "allowed" : "not allowed");
 
-	if (key != NULL)
-		key_free(key);
+	auth2_record_key(authctxt, 0, key);
+	sshkey_free(key);
 
 	/* clear temporarily storage (used by verify) */
 	monitor_reset_key_state();
@@ -1043,17 +1048,25 @@ mm_answer_keyverify(int sock, struct sshbuf *m)
 {
 	struct sshkey *key;
 	u_char *signature, *data, *blob;
+	char *sigalg;
 	size_t signaturelen, datalen, bloblen;
 	int r, ret, valid_data = 0, encoded_ret;
 
 	if ((r = sshbuf_get_string(m, &blob, &bloblen)) != 0 ||
 	    (r = sshbuf_get_string(m, &signature, &signaturelen)) != 0 ||
-	    (r = sshbuf_get_string(m, &data, &datalen)) != 0)
+	    (r = sshbuf_get_string(m, &data, &datalen)) != 0 ||
+	    (r = sshbuf_get_cstring(m, &sigalg, NULL)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 	if (hostbased_cuser == NULL || hostbased_chost == NULL ||
 	  !monitor_allowed_key(blob, bloblen))
 		fatal("%s: bad key, not previously allowed", __func__);
+
+	/* Empty signature algorithm means NULL. */
+	if (*sigalg == '\0') {
+		free(sigalg);
+		sigalg = NULL;
+	}
 
 	/* XXX use sshkey_froms here; need to change key_blob, etc. */
 	if ((r = sshkey_from_blob(blob, bloblen, &key)) != 0)
@@ -1062,10 +1075,12 @@ mm_answer_keyverify(int sock, struct sshbuf *m)
 	switch (key_blobtype) {
 	case MM_USERKEY:
 		valid_data = monitor_valid_userblob(data, datalen);
+		auth_method = "publickey";
 		break;
 	case MM_HOSTKEY:
 		valid_data = monitor_valid_hostbasedblob(data, datalen,
 		    hostbased_cuser, hostbased_chost);
+		auth_method = "hostbased";
 		break;
 	default:
 		valid_data = 0;
@@ -1075,24 +1090,19 @@ mm_answer_keyverify(int sock, struct sshbuf *m)
 		fatal("%s: bad signature data blob", __func__);
 
 	ret = sshkey_verify(key, signature, signaturelen, data, datalen,
-	    active_state->compat);
-	debug3("%s: key %p signature %s",
-	    __func__, key, (ret == 0) ? "verified" : "unverified");
-
-	/* If auth was successful then record key to ensure it isn't reused */
-	if (ret == 0 && key_blobtype == MM_USERKEY)
-		auth2_record_userkey(authctxt, key);
-	else
-		sshkey_free(key);
+	    sigalg, active_state->compat);
+	debug3("%s: %s %p signature %s", __func__, auth_method, key,
+	    (ret == 0) ? "verified" : "unverified");
+	auth2_record_key(authctxt, ret == 0, key);
 
 	free(blob);
 	free(signature);
 	free(data);
-
-	auth_method = key_blobtype == MM_USERKEY ? "publickey" : "hostbased";
+	free(sigalg);
 
 	monitor_reset_key_state();
 
+	sshkey_free(key);
 	sshbuf_reset(m);
 
 	/* encode ret != 0 as positive integer, since we're sending u32 */
@@ -1227,13 +1237,14 @@ mm_answer_pty_cleanup(int sock, Buffer *m)
 int
 mm_answer_term(int sock, Buffer *req)
 {
+	struct ssh *ssh = active_state;	/* XXX */
 	extern struct monitor *pmonitor;
 	int res, status;
 
 	debug3("%s: tearing down sessions", __func__);
 
 	/* The child is terminating */
-	session_destroy_all(&mm_session_close);
+	session_destroy_all(ssh, &mm_session_close);
 
 	while (waitpid(pmonitor->m_pid, &status, 0) == -1)
 		if (errno != EINTR)
@@ -1243,6 +1254,17 @@ mm_answer_term(int sock, Buffer *req)
 
 	/* Terminate process */
 	exit(res);
+}
+
+void
+monitor_clear_keystate(struct monitor *pmonitor)
+{
+	struct ssh *ssh = active_state;	/* XXX */
+
+	ssh_clear_newkeys(ssh, MODE_IN);
+	ssh_clear_newkeys(ssh, MODE_OUT);
+	sshbuf_free(child_state);
+	child_state = NULL;
 }
 
 void
@@ -1304,9 +1326,18 @@ static void
 monitor_openfds(struct monitor *mon, int do_logfds)
 {
 	int pair[2];
+#ifdef SO_ZEROIZE
+	int on = 1;
+#endif
 
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == -1)
 		fatal("%s: socketpair: %s", __func__, strerror(errno));
+#ifdef SO_ZEROIZE
+	if (setsockopt(pair[0], SOL_SOCKET, SO_ZEROIZE, &on, sizeof(on)) < 0)
+		error("setsockopt SO_ZEROIZE(0): %.100s", strerror(errno));
+	if (setsockopt(pair[1], SOL_SOCKET, SO_ZEROIZE, &on, sizeof(on)) < 0)
+		error("setsockopt SO_ZEROIZE(1): %.100s", strerror(errno));
+#endif
 	FD_CLOSEONEXEC(pair[0]);
 	FD_CLOSEONEXEC(pair[1]);
 	mon->m_recvfd = pair[0];
@@ -1439,6 +1470,7 @@ int
 mm_answer_gss_userok(int sock, Buffer *m)
 {
 	int authenticated;
+	const char *displayname;
 
 	if (!options.gss_authentication)
 		fatal("%s: GSSAPI authentication not enabled", __func__);
@@ -1452,6 +1484,9 @@ mm_answer_gss_userok(int sock, Buffer *m)
 	mm_request_send(sock, MONITOR_ANS_GSSUSEROK, m);
 
 	auth_method = "gssapi-with-mic";
+
+	if ((displayname = ssh_gssapi_displayname()) != NULL)
+		auth2_record_info(authctxt, "%s", displayname);
 
 	/* Monitor loop will terminate if authenticated */
 	return (authenticated);

@@ -1,4 +1,4 @@
-/* $OpenBSD: monitor_wrap.c,v 1.92 2017/05/30 14:10:53 markus Exp $ */
+/* $OpenBSD: monitor_wrap.c,v 1.98 2018/01/08 15:14:44 markus Exp $ */
 /*
  * Copyright 2002 Niels Provos <provos@citi.umich.edu>
  * Copyright 2002 Markus Friedl <markus@openbsd.org>
@@ -65,7 +65,6 @@
 #include "atomicio.h"
 #include "monitor_fdpass.h"
 #include "misc.h"
-#include "uuencode.h"
 
 #include "channels.h"
 #include "session.h"
@@ -231,6 +230,7 @@ mm_key_sign(struct sshkey *key, u_char **sigp, u_int *lenp,
 struct passwd *
 mm_getpwnamallow(const char *username)
 {
+	struct ssh *ssh = active_state;		/* XXX */
 	Buffer m;
 	struct passwd *pw;
 	u_int len, i;
@@ -271,6 +271,8 @@ out:
 			newopts->x = buffer_get_string(&m, NULL); \
 	} while (0)
 #define M_CP_STRARRAYOPT(x, nx) do { \
+		newopts->x = newopts->nx == 0 ? \
+		    NULL : xcalloc(newopts->nx, sizeof(*newopts->x)); \
 		for (i = 0; i < newopts->nx; i++) \
 			newopts->x[i] = buffer_get_string(&m, NULL); \
 	} while (0)
@@ -281,6 +283,7 @@ out:
 
 	copy_set_server_options(&options, newopts, 1);
 	log_change_level(options.log_level);
+	process_permitopen(ssh, &options);
 	free(newopts);
 
 	buffer_free(&m);
@@ -419,7 +422,7 @@ mm_key_allowed(enum mm_keytype type, const char *user, const char *host,
 
 int
 mm_sshkey_verify(const struct sshkey *key, const u_char *sig, size_t siglen,
-    const u_char *data, size_t datalen, u_int compat)
+    const u_char *data, size_t datalen, const char *sigalg, u_int compat)
 {
 	Buffer m;
 	u_char *blob;
@@ -436,6 +439,7 @@ mm_sshkey_verify(const struct sshkey *key, const u_char *sig, size_t siglen,
 	buffer_put_string(&m, blob, len);
 	buffer_put_string(&m, sig, siglen);
 	buffer_put_string(&m, data, datalen);
+	buffer_put_cstring(&m, sigalg == NULL ? "" : sigalg);
 	free(blob);
 
 	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_KEYVERIFY, &m);

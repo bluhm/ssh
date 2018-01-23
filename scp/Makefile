@@ -1,6 +1,10 @@
-#	$OpenBSD: Makefile,v 1.16 2003/01/12 16:59:14 markus Exp $
+#	$OpenBSD: Makefile,v 1.20 2018/01/08 15:37:22 markus Exp $
 
 .PATH:		${.CURDIR}/..
+
+SRCS=	scp.c
+SRCS+=	atomicio.c cleanup.c fatal.c progressmeter.c utf8.c
+SRCS+=	${SRCS_BASE}
 
 PROG=	scp
 BINOWN=	root
@@ -8,8 +12,5 @@ BINOWN=	root
 BINMODE?=555
 
 BINDIR=	/usr/bin
-MAN=	scp.1
-
-SRCS=	scp.c
 
 .include <bsd.prog.mk>
