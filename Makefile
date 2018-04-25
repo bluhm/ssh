@@ -11,4 +11,6 @@ distribution:
 	${INSTALL} -C -o root -g wheel -m 0644 ${.CURDIR}/sshd_config \
 	    ${DESTDIR}/etc/ssh/sshd_config
 
+CFLAGS=	-DWITH_OPENSSL
+
 .include <bsd.subdir.mk>
