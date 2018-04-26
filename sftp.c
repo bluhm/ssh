@@ -61,7 +61,7 @@ FILE* infile;
 int batchmode = 0;
 
 /* PID of ssh transport process */
-static pid_t sshpid = -1;
+static volatile pid_t sshpid = -1;
 
 /* Suppress diagnositic messages */
 int quiet = 0;
